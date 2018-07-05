@@ -74,6 +74,19 @@ namespace ACE.Server.Managers
             //}
         }
 
+        public void Increment(String qName, WorldObject wo)
+        {
+            var result = (wo.Biota.CharacterPropertiesQuestRegistry.Where(quest => quest.QuestName == qName));
+            if (result.FirstOrDefault().QuestName == null)
+            {
+                Console.WriteLine("You do not have this quest.");
+            }
+            else
+            {
+                result.FirstOrDefault().NumTimesCompleted++;
+            }
+        }
+
         public void Erase(String qName, WorldObject wo)
         {
 
