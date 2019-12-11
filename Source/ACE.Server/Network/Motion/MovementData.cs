@@ -29,6 +29,8 @@ namespace ACE.Server.Network.Structure
         public TurnToObject TurnToObject;
         public TurnToHeading TurnToHeading;
 
+        public MovementData() { }
+
         public MovementData(WorldObject wo)
         {
             WorldObject = wo;
@@ -37,7 +39,7 @@ namespace ACE.Server.Network.Structure
         public MovementData(WorldObject wo, Motion motion)
         {
             WorldObject = wo;
-            var sequence = wo.Sequences;
+            //var sequence = wo.Sequences;
 
             // do this here, or in network writer?
             IsAutonomous = motion.IsAutonomous;
@@ -164,10 +166,12 @@ namespace ACE.Server.Network.Structure
         /// </summary>
         public byte[] Serialize()
         {
-            var stream = new MemoryStream();
-            var writer = new BinaryWriter(stream);
-            writer.Write(this, false);
-            return stream.ToArray();
+            using (var stream = new MemoryStream())
+            using (var writer = new BinaryWriter(stream))
+            {
+                writer.Write(this, false);
+                return stream.ToArray();
+            }
         }
     }
 

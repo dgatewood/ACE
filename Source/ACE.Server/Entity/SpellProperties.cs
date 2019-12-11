@@ -100,7 +100,7 @@ namespace ACE.Server.Entity
         /// The amount of time the spell lasts
         /// usually for EnchantmentSpell / FellowshipEnchantmentSpells
         /// </summary>
-        public double Duration { get => _spell != null && _spell.DotDuration.HasValue ? _spell.DotDuration.Value : _spellBase.Duration; }
+        public double Duration { get => _spell != null && _spell.DotDuration.HasValue ? _spell.DotDuration.Value + 5.0f : _spellBase.Duration; }
 
         /// <summary>
         /// The DoT (damage over time) duration for the spell
@@ -160,9 +160,9 @@ namespace ACE.Server.Entity
         public uint DisplayOrder { get => _spellBase.DisplayOrder; }
 
         /// <summary>
-        /// Unknown what this does?
+        /// The allowed target types for this spell
         /// </summary>
-        public uint NonComponentTargetType { get => _spellBase.NonComponentTargetType; }
+        public ItemType NonComponentTargetType { get => (ItemType)_spellBase.NonComponentTargetType; }
 
         /// <summary>
         /// Additional mana cost per target (e.g. "Incantation of Acid Bane" Mana Cost = 80 + 14 per target)
@@ -240,6 +240,12 @@ namespace ACE.Server.Entity
         /// (relative to player, or global?)
         /// </summary>
         public float DefaultLaunchAngle { get => _spell.DefaultLaunchAngle ?? 0; }
+
+        /// <summary>
+        /// If this is on then projectile spells won't lead a target.
+        /// Arc spells have this set to true.
+        /// </summary>
+        public bool NonTracking { get => _spell.NonTracking ?? false; }
 
         /// <summary>
         /// The offset to apply to the spawn position
@@ -371,7 +377,7 @@ namespace ACE.Server.Entity
         public int Index { get => _spell.Index ?? 0; }
 
         /// <summary>
-        /// Unknown link field?
+        /// For SpellType.PortalSummon spells, Link is set to either 1 for LinkedPortalOneDID or 2 for LinkedPortalTwoDID
         /// </summary>
         public int Link { get => _spell.Link ?? 0; }
 

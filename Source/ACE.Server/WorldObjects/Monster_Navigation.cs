@@ -1,12 +1,15 @@
 using System;
 using System.Numerics;
 
+using ACE.Common;
 using ACE.Entity;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
 using ACE.Server.Entity;
+using ACE.Server.Entity.Actions;
 using ACE.Server.Managers;
 using ACE.Server.Physics.Animation;
+using ACE.Server.Physics.Common;
 
 namespace ACE.Server.WorldObjects
 {
@@ -16,6 +19,7 @@ namespace ACE.Server.WorldObjects
         /// Return to home if target distance exceeds this range
         /// </summary>
         public static readonly float MaxChaseRange = 192.0f;
+        public static readonly float MaxChaseRangeSq = MaxChaseRange * MaxChaseRange;
 
         /// <summary>
         /// Determines if a monster is within melee range of target
@@ -85,7 +89,7 @@ namespace ACE.Server.WorldObjects
 
             // send network actions
             var targetDist = GetDistanceToTarget();
-            var turnTo = IsRanged || (CurrentAttack == CombatType.Magic && targetDist <= GetSpellMaxRange());
+            var turnTo = IsRanged || (CurrentAttack == CombatType.Magic && targetDist <= GetSpellMaxRange()) || AiImmobile;
             if (turnTo)
                 TurnTo(AttackTarget);
             else
@@ -142,10 +146,17 @@ namespace ACE.Server.WorldObjects
         public virtual void OnMoveComplete(WeenieError status)
         {
             if (DebugMove)
-                Console.WriteLine($"{Name} ({Guid}) - OnMoveComplete");
+                Console.WriteLine($"{Name} ({Guid}) - OnMoveComplete({status})");
 
             if (status != WeenieError.None)
                 return;
+
+            if (AiImmobile && CurrentAttack == CombatType.Melee)
+            {
+                var targetDist = GetDistanceToTarget();
+                if (targetDist > MaxRange)
+                    ResetAttack();
+            }
 
             if (MonsterState == State.Return)
                 Sleep();
@@ -239,7 +250,11 @@ namespace ACE.Server.WorldObjects
                 UpdatePosition();
 
             if (GetDistanceToTarget() >= MaxChaseRange && MonsterState != State.Return)
-                Sleep();
+            {
+                CancelMoveTo();
+                FindNextTarget();
+                return;
+            }
 
             if (PhysicsObj.MovementManager.MoveToManager.FailProgressCount > 0 && Timers.RunningTime > NextCancelTime)
                 CancelMoveTo();
@@ -249,7 +264,9 @@ namespace ACE.Server.WorldObjects
 
         public void UpdatePosition()
         {
+            stopwatch.Restart();
             PhysicsObj.update_object();
+            ServerPerformanceMonitor.AddToCumulativeEvent(ServerPerformanceMonitor.CumulativeEventHistoryType.Monster_Navigation_UpdatePosition_PUO, stopwatch.Elapsed.TotalSeconds);
             UpdatePosition_SyncLocation();
 
             //SendUpdatePosition(ForcePos);
@@ -259,6 +276,12 @@ namespace ACE.Server.WorldObjects
             if (DebugMove)
                 //Console.WriteLine($"{Name} ({Guid}) - UpdatePosition (velocity: {PhysicsObj.CachedVelocity.Length()})");
                 Console.WriteLine($"{Name} ({Guid}) - UpdatePosition: {Location.ToLOCString()}");
+
+            if (MonsterState == State.Return && PhysicsObj.MovementManager.MoveToManager.PendingActions.Count == 0)
+                Sleep();
+
+            if (MonsterState == State.Awake && IsMoving && PhysicsObj.MovementManager.MoveToManager.PendingActions.Count == 0)
+                IsMoving = false;
         }
 
         /// <summary>
@@ -327,8 +350,24 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public float GetRunRate()
         {
+            var burden = 0.0f;
+
+            // assuming burden only applies to players...
+            if (this is Player player)
+            {
+                var strength = Strength.Current;
+
+                var capacity = EncumbranceSystem.EncumbranceCapacity((int)strength, player.AugmentationIncreasedCarryingCapacity);
+                burden = EncumbranceSystem.GetBurden(capacity, EncumbranceVal ?? 0);
+
+                // TODO: find this exact formula in client
+                // technically this would be based on when the player releases / presses the movement key after stamina > 0
+                if (player.IsExhausted)
+                    burden = 3.0f;
+            }
+
             var runSkill = GetCreatureSkill(Skill.Run).Current;
-            var runRate = MovementSystem.GetRunRate(0.0f, (int)runSkill, 1.0f);
+            var runRate = MovementSystem.GetRunRate(burden, (int)runSkill, 1.0f);
 
             return (float)runRate;
         }
@@ -376,7 +415,7 @@ namespace ACE.Server.WorldObjects
             // set non-default params for monster movement
             mvp.Flags &= ~MovementParamFlags.CanWalk;
 
-            var turnTo = IsRanged || (CurrentAttack == CombatType.Magic && GetDistanceToTarget() <= GetSpellMaxRange());
+            var turnTo = IsRanged || (CurrentAttack == CombatType.Magic && GetDistanceToTarget() <= GetSpellMaxRange()) || AiImmobile;
 
             if (!turnTo)
                 mvp.Flags |= MovementParamFlags.FailWalk | MovementParamFlags.UseFinalHeading | MovementParamFlags.Sticky | MovementParamFlags.MoveAway;
@@ -396,8 +435,32 @@ namespace ACE.Server.WorldObjects
             Sticky = false;
         }
 
-        public static float HomeDist = 192.0f;
-        public static float HomeDistSq = HomeDist * HomeDist;
+        /// <summary>
+        /// The maximum distance a monster can travel outside of its home position
+        /// </summary>
+        public double? HomeRadius
+        {
+            get => GetProperty(PropertyFloat.HomeRadius);
+            set { if (!value.HasValue) RemoveProperty(PropertyFloat.HomeRadius); else SetProperty(PropertyFloat.HomeRadius, value.Value); }
+        }
+
+        public static float DefaultHomeRadius = 192.0f;
+        public static float DefaultHomeRadiusSq = DefaultHomeRadius * DefaultHomeRadius;
+
+        private float? homeRadiusSq;
+
+        public float HomeRadiusSq
+        {
+            get
+            {
+                if (homeRadiusSq == null)
+                {
+                    var homeRadius = HomeRadius ?? DefaultHomeRadius;
+                    homeRadiusSq = (float)(homeRadius * homeRadius);
+                }
+                return homeRadiusSq.Value;
+            }
+        }
 
         public void CheckMissHome()
         {
@@ -412,8 +475,11 @@ namespace ACE.Server.WorldObjects
 
             var homeDistSq = Vector3.DistanceSquared(globalHomePos, globalPos);
 
-            if (homeDistSq > HomeDistSq)
+            if (homeDistSq > HomeRadiusSq)
+            {
+                EmoteManager.OnHomeSick(AttackTarget);
                 MoveToHome();
+            }
         }
 
         public void MoveToHome()
@@ -427,11 +493,19 @@ namespace ACE.Server.WorldObjects
             var home = GetPosition(PositionType.Home);
 
             if (Location.Equals(home))
+            {
+                Sleep();
                 return;
+            }
 
-            MoveTo(home, RunRate);
+            NextCancelTime = Timers.RunningTime + 5.0f;
 
-            PhysicsObj.MoveToPosition(new Physics.Common.Position(home), GetMovementParameters());
+            MoveTo(home, RunRate, false, 1.0f);
+
+            var mvp = GetMovementParameters();
+            mvp.DistanceToObject = 0.6f;
+
+            PhysicsObj.MoveToPosition(new Physics.Common.Position(home), mvp);
             IsMoving = true;
         }
 
@@ -442,6 +516,9 @@ namespace ACE.Server.WorldObjects
             PhysicsObj.MovementManager.MoveToManager.CancelMoveTo(WeenieError.ActionCancelled);
             PhysicsObj.MovementManager.MoveToManager.FailProgressCount = 0;
 
+            if (MonsterState == State.Return)
+                ForceHome();
+
             EnqueueBroadcastMotion(new Motion(CurrentMotionState.Stance, MotionCommand.Ready));
 
             IsMoving = false;
@@ -450,6 +527,29 @@ namespace ACE.Server.WorldObjects
             ResetAttack();
 
             FindNextTarget();
+        }
+
+        public void ForceHome()
+        {
+            var homePos = GetPosition(PositionType.Home);
+
+            if (DebugMove)
+                Console.WriteLine($"{Name} ({Guid}) - ForceHome({homePos.ToLOCString()})");
+
+            var setPos = new SetPosition();
+            setPos.Pos = new Physics.Common.Position(homePos);
+            setPos.Flags = SetPositionFlags.Teleport;
+
+            PhysicsObj.SetPosition(setPos);
+
+            UpdatePosition_SyncLocation();
+
+            SendUpdatePosition();
+
+            var actionChain = new ActionChain();
+            actionChain.AddDelaySeconds(0.5f);
+            actionChain.AddAction(this, Sleep);
+            actionChain.EnqueueChain();
         }
     }
 }

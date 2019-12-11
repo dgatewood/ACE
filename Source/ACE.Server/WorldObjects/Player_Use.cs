@@ -1,7 +1,7 @@
 using System;
+
 using ACE.Entity;
 using ACE.Entity.Enum;
-using ACE.Entity.Enum.Properties;
 using ACE.Server.Entity.Actions;
 using ACE.Server.Network.GameEvent.Events;
 
@@ -15,12 +15,23 @@ namespace ACE.Server.WorldObjects
         public ObjectGuid LastOpenedContainerId { get; set; }
 
         /// <summary>
+        /// This is set by Hook.ActOnUse
+        /// </summary>
+        public ObjectGuid LasUsedHookId { get; set; }
+
+        /// <summary>
         /// Handles the 'GameAction 0x35 - UseWithTarget' network message
         /// when player double clicks an inventory item resulting in a target indicator
         /// and then clicks another item
         /// </summary>
         public void HandleActionUseWithTarget(uint sourceObjectGuid, uint targetObjectGuid)
         {
+            if (PKLogout)
+            {
+                SendUseDoneEvent(WeenieError.YouHaveBeenInPKBattleTooRecently);
+                return;
+            }
+
             StopExistingMoveToChains();
 
             // source item is always in our possession
@@ -77,6 +88,12 @@ namespace ACE.Server.WorldObjects
         /// </summary>
         public void HandleActionUseItem(uint itemGuid)
         {
+            if (PKLogout)
+            {
+                SendUseDoneEvent(WeenieError.YouHaveBeenInPKBattleTooRecently);
+                return;
+            }
+
             StopExistingMoveToChains();
 
             var item = FindObject(itemGuid, SearchLocations.MyInventory | SearchLocations.MyEquippedItems | SearchLocations.Landblock);
@@ -84,18 +101,27 @@ namespace ACE.Server.WorldObjects
             if (item != null)
             {
                 if (item.CurrentLandblock != null && !item.Visibility && item.Guid != LastOpenedContainerId)
+                {
+                    if (IsBusy)
+                    {
+                        SendUseDoneEvent(WeenieError.YoureTooBusy);
+                        return;
+                    }
+
                     CreateMoveToChain(item, (success) => TryUseItem(item, success));
+                }
                 else
                     TryUseItem(item);
             }
             else
             {
-                log.Warn($"{Name}.HandleActionUseItem({itemGuid:X8}): couldn't find object");
+                log.Debug($"{Name}.HandleActionUseItem({itemGuid:X8}): couldn't find object");
                 SendUseDoneEvent();
             }
         }
 
-        public float LastUseTime;
+        public DateTime NextUseTime { get; set; }
+        public float LastUseTime { get; set; }
 
         /// <summary>
         /// Attempts to use an item - checks activation requirements
@@ -112,6 +138,8 @@ namespace ACE.Server.WorldObjects
             actionChain.AddDelaySeconds(LastUseTime);
             actionChain.AddAction(this, () => SendUseDoneEvent());
             actionChain.EnqueueChain();
+
+            NextUseTime = DateTime.UtcNow + TimeSpan.FromSeconds(LastUseTime);
         }
 
         /// <summary>

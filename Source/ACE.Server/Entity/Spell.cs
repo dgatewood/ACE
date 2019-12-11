@@ -1,5 +1,9 @@
 using System;
 using System.Collections.Generic;
+
+using log4net;
+
+using ACE.Common;
 using ACE.DatLoader;
 using ACE.DatLoader.Entity;
 using ACE.DatLoader.FileTypes;
@@ -7,7 +11,6 @@ using ACE.Database;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
 using ACE.Server.WorldObjects;
-using log4net;
 
 namespace ACE.Server.Entity
 {
@@ -113,9 +116,14 @@ namespace ACE.Server.Entity
         public bool IsBeneficial => Flags.HasFlag(SpellFlags.Beneficial);
 
         /// <summary>
-        /// Returns TRUE if this is a hamrful spell
+        /// Returns TRUE if this is a harmful spell
         /// </summary>
         public bool IsHarmful { get => !IsBeneficial; }
+
+        /// <summary>
+        /// Returns TRUE if this spell is resistable
+        /// </summary>
+        public bool IsResistable => Flags.HasFlag(SpellFlags.Resistable);
 
         public bool IsProjectile => NumProjectiles > 0;
 
@@ -215,6 +223,25 @@ namespace ACE.Server.Entity
             return Skill.None;
         }
 
+        /// <summary>
+        /// Returns TRUE if spell category matches impen / bane / brittlemail / lure
+        /// </summary>
+        public bool IsImpenBaneType => Category >= SpellCategory.ArmorValueRaising && Category <= SpellCategory.AcidicResistanceLowering;
+
+        public bool IsNegativeRedirectable => IsHarmful && (IsImpenBaneType || IsOtherNegativeRedirectable);
+
+        public bool IsOtherNegativeRedirectable
+        {
+            get
+            {
+                return Category == SpellCategory.DamageLowering     // encompasses both blood and spirit loather, inconsistent with spirit drinker in dat
+                    || Category == SpellCategory.DefenseModLowering
+                    || Category == SpellCategory.AttackModLowering
+                    || Category == SpellCategory.WeaponTimeLowering
+                    || Category == SpellCategory.ManaConversionModLowering;    // hermetic void, replaced hide value, unchanged category in dat
+            }
+        }
+
         public bool IsPortalSpell
         {
             get
@@ -222,7 +249,8 @@ namespace ACE.Server.Entity
                 return MetaSpellType == SpellType.PortalLink
                     || MetaSpellType == SpellType.PortalRecall
                     || MetaSpellType == SpellType.PortalSending
-                    || MetaSpellType == SpellType.PortalSummon;
+                    || MetaSpellType == SpellType.PortalSummon
+                    || MetaSpellType == SpellType.FellowPortalSending;
             }
         }
 
@@ -237,8 +265,35 @@ namespace ACE.Server.Entity
                     || Category == SpellCategory.DamageRaising
                     || Category == SpellCategory.DefenseModRaising
                     || Category == SpellCategory.WeaponTimeRaising
-                    || Category == SpellCategory.AppraisalResistanceLowering
+                    || Category == SpellCategory.ManaConversionModRaising
                     || Category == SpellCategory.SpellDamageRaising;
+            }
+        }
+
+        /// <summary>
+        /// Returns TRUE for any spells which could potentially affect the run rate,
+        /// such as spells which alter run / quickness / strength
+        /// </summary>
+        public bool UpdatesRunRate
+        {
+            get
+            {
+                if (_spell == null)
+                    return false;
+
+                // this is commented out as below in UpdatesMaxVitals
+                // i forget the exact reasoning, are all the proper hooks in places for each vitae %,
+                // and not just add/remove?
+                /*if (_spell.Id == 666)   // vitae
+                    return true;*/
+
+                if (StatModType.HasFlag(EnchantmentTypeFlags.Attribute) && (StatModKey == (uint)PropertyAttribute.Strength || StatModKey == (uint)PropertyAttribute.Quickness))
+                    return true;
+
+                if (StatModType.HasFlag(EnchantmentTypeFlags.Skill) && StatModKey == (uint)Skill.Run)
+                    return true;
+
+                return false;
             }
         }
 
@@ -253,6 +308,15 @@ namespace ACE.Server.Entity
 
                 if (_spell == null)
                     return maxVitals;
+
+                /*if (_spell.Id == 666)   // Vitae
+                {
+                    maxVitals.Add(PropertyAttribute2nd.MaxHealth);
+                    maxVitals.Add(PropertyAttribute2nd.MaxStamina);
+                    maxVitals.Add(PropertyAttribute2nd.MaxMana);
+
+                    return maxVitals;
+                }*/
 
                 if (StatModType.HasFlag(EnchantmentTypeFlags.SecondAtt) && StatModKey != 0)
                     maxVitals.Add((PropertyAttribute2nd)StatModKey);
@@ -271,14 +335,6 @@ namespace ACE.Server.Entity
                             break;
                     }
                 }
-
-                //if (_spell.Id == 666) // Vitae
-                //{
-                //    maxVitals.Add(PropertyAttribute2nd.MaxHealth);
-                //    maxVitals.Add(PropertyAttribute2nd.MaxStamina);
-                //    maxVitals.Add(PropertyAttribute2nd.MaxMana);
-                //}
-
                 return maxVitals;
             }
         }

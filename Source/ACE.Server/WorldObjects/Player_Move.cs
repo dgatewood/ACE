@@ -34,7 +34,7 @@ namespace ACE.Server.WorldObjects
             lastCompletedMove = moveToChainCounter;
         }
 
-        public void CreateMoveToChain(WorldObject target, Action<bool> callback, float? useRadius = null)
+        public void CreateMoveToChain(WorldObject target, Action<bool> callback, float? useRadius = null, bool rotate = true)
         {
             var thisMoveToChainNumber = GetNextMoveToChainNumber();
 
@@ -47,27 +47,43 @@ namespace ACE.Server.WorldObjects
                 return;
             }
 
+            // fix bug in magic combat mode after walking to target,
+            // crouch animation steps out of range
+            if (useRadius == null)
+                useRadius = target.UseRadius ?? 0.6f;
+
+            if (CombatMode == CombatMode.Magic)
+                useRadius = Math.Max(0.0f, useRadius.Value - 0.2f);
+
             // already within use distance?
             var withinUseRadius = CurrentLandblock.WithinUseRadius(this, target.Guid, out var targetValid, useRadius);
             if (withinUseRadius)
             {
-                // send TurnTo motion
-                var rotateTime = Rotate(target);
-                var actionChain = new ActionChain();
-                actionChain.AddDelaySeconds(rotateTime);
-                actionChain.AddAction(this, () =>
+                if (rotate)
+                {
+                    // send TurnTo motion
+                    var rotateTime = Rotate(target);
+                    var actionChain = new ActionChain();
+                    actionChain.AddDelaySeconds(rotateTime);
+                    actionChain.AddAction(this, () =>
+                    {
+                        lastCompletedMove = thisMoveToChainNumber;
+                        callback(true);
+                    });
+                    actionChain.EnqueueChain();
+                }
+                else
                 {
                     lastCompletedMove = thisMoveToChainNumber;
                     callback(true);
-                });
-                actionChain.EnqueueChain();
+                }
                 return;
             }
 
             if (target.WeenieType == WeenieType.Portal)
                 MoveToPosition(target.Location);
             else
-                MoveToObject(target);
+                MoveToObject(target, useRadius);
 
             moveToChainStartTime = DateTime.UtcNow;
 
@@ -193,7 +209,7 @@ namespace ACE.Server.WorldObjects
             switch (status)
             {
                 case WeenieError.None:
-                    Attack(MeleeTarget);
+                    Attack(MeleeTarget, AttackSequence);
                     break;
                 default:
                     Session.Network.EnqueueSend(new GameEventWeenieError(Session, status));
@@ -247,7 +263,7 @@ namespace ACE.Server.WorldObjects
 
         public void TakeDamage_Falling(float amount)
         {
-            if (Invincible ?? false) return;
+            if (IsDead || Invincible) return;
 
             // handle lifestone protection?
             if (UnderLifestoneProtection)
@@ -266,11 +282,11 @@ namespace ACE.Server.WorldObjects
 
             var msg = Strings.GetFallMessage(damageTaken, Health.MaxValue);
 
-            Session.Network.EnqueueSend(new GameMessageSystemChat(msg, ChatMessageType.Combat));
+            SendMessage(msg, ChatMessageType.Combat);
 
             if (Health.Current <= 0)
             {
-                OnDeath(this, DamageType.Bludgeon, false);
+                OnDeath(new DamageHistoryInfo(this), DamageType.Bludgeon, false);
                 Die();
             }
             else

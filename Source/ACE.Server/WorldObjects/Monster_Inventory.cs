@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
+using ACE.Common;
 using ACE.Common.Extensions;
 using ACE.Database;
 using ACE.Database.Models.World;
@@ -63,15 +64,17 @@ namespace ACE.Server.WorldObjects
             if (pants.Count > 0)
             {
                 var item = pants[0];
-                TryWieldObjectWithBroadcasting(item, item.ValidLocations ?? 0);
-                equipped.Add(item);
+                TryRemoveFromInventory(item.Guid);
+                if (TryWieldObjectWithBroadcasting(item, item.ValidLocations ?? 0))
+                    equipped.Add(item);
             }
 
             if (shirts.Count > 0)
             {
                 var item = shirts[0];
-                TryWieldObjectWithBroadcasting(item, item.ValidLocations ?? 0);
-                equipped.Add(item);
+                TryRemoveFromInventory(item.Guid);
+                if (TryWieldObjectWithBroadcasting(item, item.ValidLocations ?? 0))
+                    equipped.Add(item);
             }
             return equipped;
         }
@@ -117,8 +120,11 @@ namespace ACE.Server.WorldObjects
             var sorted = head.Concat(chest).Concat(upperArms).Concat(lowerArms).Concat(hands).Concat(upperLegs).Concat(lowerLegs).Concat(feet).ToList();
 
             foreach (var item in sorted)
+            {
+                TryRemoveFromInventory(item.Guid);
                 if (TryWieldObjectWithBroadcasting(item, item.ValidLocations ?? 0))
                     equipped.Add(item);
+            }
 
             return equipped;
         }

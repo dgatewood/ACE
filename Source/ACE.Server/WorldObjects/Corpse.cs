@@ -1,17 +1,20 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 
 using log4net;
 
+using ACE.Common;
 using ACE.Database.Models.Shard;
 using ACE.Database.Models.World;
 using ACE.Entity;
+using ACE.Server.Entity.Actions;
 using ACE.Entity.Enum;
 using ACE.Entity.Enum.Properties;
 using ACE.Server.Entity;
+using ACE.Server.Factories;
 using ACE.Server.Managers;
 using ACE.Server.Network.GameMessages.Messages;
-using ACE.Server.Factories;
 
 namespace ACE.Server.WorldObjects
 {
@@ -47,7 +50,7 @@ namespace ACE.Server.WorldObjects
 
         private void SetEphemeralValues()
         {
-            BaseDescriptionFlags |= ObjectDescriptionFlag.Corpse;
+            ObjectDescriptionFlags |= ObjectDescriptionFlag.Corpse;
 
             CurrentMotionState = new Motion(MotionStance.NonCombat, MotionCommand.Dead);
 
@@ -55,6 +58,17 @@ namespace ACE.Server.WorldObjects
             ItemCapacity = 120;
 
             SuppressGenerateEffect = true;
+        }
+
+        protected override void OnInitialInventoryLoadCompleted()
+        {
+            if (Level.HasValue)
+            {
+                var dtTimeToRot = DateTime.UtcNow.AddSeconds(TimeToRot ?? 0);
+                var tsDecay = dtTimeToRot - DateTime.UtcNow;
+
+                log.Debug($"[CORPSE] {Name} (0x{Guid}) Reloaded from Database: Corpse Level: {Level ?? 0} | InventoryLoaded: {InventoryLoaded} | Inventory.Count: {Inventory.Count} | TimeToRot: {TimeToRot} | CreationTimestamp: {CreationTimestamp} ({Time.GetDateTimeFromTimestamp(CreationTimestamp ?? 0).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")}) | Corpse should not decay before: {dtTimeToRot.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")}, {tsDecay.ToString("%d")} day(s), {tsDecay.ToString("%h")} hours, {tsDecay.ToString("%m")} minutes, and {tsDecay.ToString("%s")} seconds from now.");
+            }
         }
 
         /// <summary>
@@ -94,6 +108,13 @@ namespace ACE.Server.WorldObjects
             else
                 // a player corpse decays after 5 mins * playerLevel with a minimum of 1 hour
                 TimeToRot = Math.Max(3600, (player.Level ?? 1) * 300);
+
+            var dtTimeToRot = DateTime.UtcNow.AddSeconds(TimeToRot ?? 0);
+            var tsDecay = dtTimeToRot - DateTime.UtcNow;
+
+            Level = player.Level ?? 1;
+
+            log.Debug($"[CORPSE] {Name}.RecalculateDecayTime({player.Name}) 0x{Guid}: Player Level: {player.Level} | Inventory.Count: {Inventory.Count} | TimeToRot: {TimeToRot} | CreationTimestamp: {CreationTimestamp} ({Time.GetDateTimeFromTimestamp(CreationTimestamp ?? 0).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")}) | Corpse should not decay before: {dtTimeToRot.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")}, {tsDecay.ToString("%d")} day(s), {tsDecay.ToString("%h")} hours, {tsDecay.ToString("%m")} minutes, and {tsDecay.ToString("%s")} seconds from now.");
         }
 
         /// <summary>
@@ -116,7 +137,7 @@ namespace ACE.Server.WorldObjects
         public bool HasPermission(Player player)
         {
             // players can loot their own corpses
-            if (player.Guid.Full == VictimId)
+            if (VictimId == null || player.Guid.Full == VictimId)
                 return true;
 
             // players can loot monsters they killed
@@ -125,6 +146,10 @@ namespace ACE.Server.WorldObjects
 
             // players can /permit other players to loot their corpse
             if (player.HasLootPermission(new ObjectGuid(VictimId.Value)))
+                return true;
+
+            // all players can loot monster corpses after 1/2 decay time
+            if (TimeToRot != null && TimeToRot < HalfLife && !new ObjectGuid(VictimId.Value).IsPlayer())
                 return true;
 
             // players in the same fellowship as the killer w/ loot sharing enabled
@@ -138,6 +163,12 @@ namespace ACE.Server.WorldObjects
         }
 
         public bool IsLooted;
+
+        /// <summary>
+        /// The number of seconds before all players can loot a monster corpse
+        /// </summary>
+        public static int HalfLife = 180;
+
 
         public override void Close(Player player)
         {
@@ -155,16 +186,23 @@ namespace ACE.Server.WorldObjects
 
         public override void EnterWorld()
         {
+            var actionChain = new ActionChain();
+
             base.EnterWorld();
 
-            if (Location != null)
+            actionChain.AddDelaySeconds(.5);
+            actionChain.AddAction(this, () =>
             {
-                if (CorpseGeneratedRare)
+                if (Location != null)
                 {
-                    EnqueueBroadcast(new GameMessageSystemChat($"{killerName} has discovered the {rareGenerated.Name}!", ChatMessageType.System));
-                    ApplySoundEffects(Sound.TriggerActivated, 10);
+                    if (CorpseGeneratedRare)
+                    {
+                        EnqueueBroadcast(new GameMessageSystemChat($"{killerName} has discovered the {rareGenerated.Name}!", ChatMessageType.System));
+                        ApplySoundEffects(Sound.TriggerActivated, 10);
+                    }
                 }
-            }
+            });
+            actionChain.EnqueueChain();
         }
 
         private WorldObject rareGenerated;
@@ -173,7 +211,7 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Called to generate rare and add to corpse inventory
         /// </summary>
-        public void GenerateRare(WorldObject killer)
+        public void GenerateRare(DamageHistoryInfo killer)
         {
             //todo: calculate chances for killer's luck (rare timers)
 
@@ -181,17 +219,21 @@ namespace ACE.Server.WorldObjects
             if (wo == null)
                 return;
 
+            if (!wo.IconUnderlayId.HasValue || wo.IconUnderlayId.Value != 0x6005B0C) // ensure icon underlay exists for rare (loot profiles use this)
+                wo.IconUnderlayId = 0x6005B0C;
+
             var tier = LootGenerationFactory.GetRareTier(wo.WeenieClassId);
             LootGenerationFactory.RareChances.TryGetValue(tier, out var chance);
 
-            log.Info($"[RARE] {Name} ({Guid}) generated rare {wo.Name} ({wo.Guid}) for {killer.Name} ({killer.Guid})");
-            log.Info($"[RARE] Tier {tier} -- 1 / {chance:N0} chance");
+            log.Debug($"[LOOT][RARE] {Name} ({Guid}) generated rare {wo.Name} ({wo.Guid}) for {killer.Name} ({killer.Guid})");
+            log.Debug($"[LOOT][RARE] Tier {tier} -- 1 / {chance:N0} chance");
 
             if (TryAddToInventory(wo))
             {
                 rareGenerated = wo;
                 killerName = killer.Name.TrimStart('+');
                 CorpseGeneratedRare = true;
+                LongDesc += " This corpse generated a rare item!";
             }
             else
                 log.Error($"[RARE] failed to add to corpse inventory");

@@ -1,6 +1,8 @@
 using System;
+
 using ACE.Entity;
 using ACE.Entity.Enum;
+using ACE.Server.Entity;
 using ACE.Server.Physics.Animation;
 using ACE.Server.Physics.Combat;
 using ACE.Server.Physics.Collision;
@@ -12,13 +14,22 @@ namespace ACE.Server.Physics.Common
     {
         public uint ID;
         public double UpdateTime;
-        public WorldObject WorldObject;
+        public readonly WorldObjectInfo WorldObjectInfo;
+        public WorldObject WorldObject => WorldObjectInfo?.TryGetWorldObject();
+
+        public bool IsMonster;
+
+        public bool IsCombatPet;
 
         public WeenieObject() { }
 
         public WeenieObject(WorldObject worldObject)
         {
-            WorldObject = worldObject;
+            WorldObjectInfo = new WorldObjectInfo(worldObject);
+
+            IsCombatPet = worldObject is CombatPet;
+
+            IsMonster = worldObject is Creature creature && creature.IsMonster && !IsCombatPet;
         }
 
         public bool CanJump(float extent)
@@ -36,8 +47,7 @@ namespace ACE.Server.Physics.Common
         {
             // get run skill from WorldObject
             uint runSkill = 0;
-            var creature = WorldObject as Creature;
-            if (creature != null)
+            if (WorldObject is Creature creature)
                 runSkill = creature.GetCreatureSkill(Skill.Run).Current;
 
             //rate = (float)MovementSystem.GetRunRate(0.0f, 300, 1.0f);
@@ -48,41 +58,37 @@ namespace ACE.Server.Physics.Common
 
         public bool IsCorpse()
         {
-            return false;
+            return WorldObject is Corpse;
         }
 
-        public bool IsImpenetable()
+        public bool IsImpenetrable()
         {
-            return false;
+            return WorldObject is Player player && player.PlayerKillerStatus == PlayerKillerStatus.Free;
         }
 
         public bool IsPK()
         {
-            return false;
+            return WorldObject is Player player && player.IsPK;
         }
 
         public bool IsPKLite()
         {
-            return false;
+            return WorldObject is Player player && player.IsPKL;
         }
 
         public bool IsPlayer()
         {
-            return true;
+            return WorldObject is Player;
         }
 
         public bool IsCreature()
         {
-            if (WorldObject == null) return false;
-            var creature = WorldObject as Creature;
-            return creature != null;
-
-            //return true;
+            return WorldObject is Creature;
         }
 
         public bool IsStorage()
         {
-            return false;
+            return WorldObject is Storage;
         }
 
         public float JumpStaminaCost(float extent, int staminaCost)
@@ -90,18 +96,45 @@ namespace ACE.Server.Physics.Common
             return 0;
         }
 
-        public int DoCollision(AtkCollisionProfile prof, ObjectGuid guid, PhysicsObj target)
+        public void InqCollisionProfile(ObjCollisionProfile prof)
         {
-            // no collision with self
-            if (WorldObject.Guid.Equals(target.WeenieObj.WorldObject.Guid))
+            prof.WCID = ID;
+            prof.ItemType = WorldObject.ItemType;
+
+            if (WorldObject is Creature)
+                prof.Flags |= ObjCollisionProfileFlags.Creature;
+
+            if (WorldObject is Player)
+                prof.Flags |= ObjCollisionProfileFlags.Player;
+
+            if (WorldObject.Attackable)
+                prof.Flags |= ObjCollisionProfileFlags.Attackable;
+
+            if (WorldObject is Door)
+                prof.Flags |= ObjCollisionProfileFlags.Door;
+        }
+
+        public int DoCollision(ObjCollisionProfile prof, ObjectGuid guid, PhysicsObj target)
+        {
+            var wo = WorldObject;
+
+            if (wo == null)
                 return -1;
 
-            /*Console.WriteLine("AtkCollisionProfile");
+            var targetWO = target.WeenieObj.WorldObject;
+
+            if (targetWO == null)
+                return -1;
+
+            // no collision with self
+            if (wo.Guid.Equals(targetWO.Guid))
+                return -1;
+
+            /*Console.WriteLine("ObjCollisionProfile");
             Console.WriteLine("Source: " + WorldObject.Name);
             Console.WriteLine("Target: " + obj.WeenieObj.WorldObject.Name);*/
 
-            if (WorldObject != null)
-                WorldObject.OnCollideObject(target.WeenieObj.WorldObject);
+            wo.OnCollideObject(targetWO);
 
             return 0;
         }
@@ -113,22 +146,30 @@ namespace ACE.Server.Physics.Common
             Console.WriteLine("Target: " + target.WeenieObj.WorldObject.Name);
             Console.WriteLine("Velocity: " + prof.Velocity);*/
 
-            if (WorldObject != null)
-            {
-                if (WorldObject is Player player)
-                    player.HandleFallingDamage(prof);
-                else
-                    WorldObject.OnCollideEnvironment();
-            }
+            var wo = WorldObject;
+
+            if (wo == null)
+                return 0;
+
+            if (wo is Player player)
+                player.HandleFallingDamage(prof);
+            else
+                wo.OnCollideEnvironment();
+
             return 0;
         }
 
         public void DoCollisionEnd(ObjectGuid targetGuid)
         {
-            var target = WorldObject.CurrentLandblock?.GetObject(targetGuid);
+            var wo = WorldObject;
 
-            if (WorldObject != null && target != null)
-                WorldObject.OnCollideObjectEnd(target);
+            if (wo == null)
+                return;
+
+            var target = wo.CurrentLandblock?.GetObject(targetGuid);
+
+            if (target != null)
+                wo.OnCollideObjectEnd(target);
         }
 
         public void OnMotionDone(uint motionID, bool success)

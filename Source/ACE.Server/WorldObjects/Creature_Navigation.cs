@@ -99,6 +99,9 @@ namespace ACE.Server.WorldObjects
         /// <returns>The amount of time in seconds for the rotation to complete</returns>
         public virtual float Rotate(WorldObject target)
         {
+            if (target == null || target.Location == null)
+                return 0.0f;
+
             // send network message to start turning creature
             var turnToMotion = new Motion(this, target, MovementType.TurnToObject);
             EnqueueBroadcastMotion(turnToMotion);
@@ -116,12 +119,16 @@ namespace ACE.Server.WorldObjects
             actionChain.AddDelaySeconds(rotateDelay);
             actionChain.AddAction(this, () =>
             {
+                if (target == null || target.Location == null)
+                    return;
+
                 var matchIndoors = Location.Indoors == target.Location.Indoors;
 
                 var globalLoc = matchIndoors ? Location.ToGlobal() : Location.Pos;
                 var targetLoc = matchIndoors ? target.Location.ToGlobal() : target.Location.Pos;
 
                 var targetDir = GetDirection(globalLoc, targetLoc);
+
                 Location.Rotate(targetDir);
             });
             actionChain.EnqueueChain();
@@ -262,12 +269,17 @@ namespace ACE.Server.WorldObjects
         /// <summary>
         /// Sends a network message for moving a creature to a new position
         /// </summary>
-        public void MoveTo(Position position, float runRate = 1.0f)
+        public void MoveTo(Position position, float runRate = 1.0f, bool setLoc = true, float? walkRunThreshold = null, float? speed = null)
         {
+            // TODO: change parameters to accept an optional MoveToParameters
+
             var motion = new Motion(this, position);
             motion.MovementType = MovementType.MoveToPosition;
             //motion.Flag |= MovementParams.CanCharge | MovementParams.FailWalk | MovementParams.UseFinalHeading | MovementParams.MoveAway;
-            motion.MoveToParameters.WalkRunThreshold = 1.0f;
+            if (walkRunThreshold != null)
+                motion.MoveToParameters.WalkRunThreshold = walkRunThreshold.Value;
+            if (speed != null)
+                motion.MoveToParameters.Speed = speed.Value;
 
             // always use final heading?
             var frame = new AFrame(position.Pos, position.Rotation);
@@ -281,7 +293,9 @@ namespace ACE.Server.WorldObjects
                 motion.MoveToParameters.MovementParameters &= ~MovementParams.CanRun;
 
             // todo: use better movement system
-            Location = new Position(position);
+            // todo: set physics position
+            if (setLoc)
+                Location = new Position(position);
 
             EnqueueBroadcastMotion(motion);
         }

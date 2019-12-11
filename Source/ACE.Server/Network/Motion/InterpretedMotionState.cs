@@ -26,7 +26,10 @@ namespace ACE.Server.Network.Structure
         // commands: list of length commandListLength
         public List<MotionItem> Commands;
 
-        public InterpretedMotionState() { }
+        public InterpretedMotionState()
+        {
+            ForwardCommand = MotionCommand.Ready;
+        }
 
         public InterpretedMotionState(MovementData data)
         {
@@ -81,6 +84,11 @@ namespace ACE.Server.Network.Structure
                 flags |= MovementStateFlag.TurnSpeed;
 
             return flags;
+        }
+
+        public bool HasMovement()
+        {
+            return (ForwardCommand != MotionCommand.Invalid && ForwardCommand != MotionCommand.Ready) || TurnCommand != MotionCommand.Invalid || SidestepCommand != MotionCommand.Invalid;
         }
     }
 
